@@ -1,0 +1,47 @@
+[project]
+name = "legal_attitudes"
+version = "0.0.1"
+description = "Attitudes of LLMs Toward the Law"
+readme = "README.md"
+requires-python = ">=3.11"
+
+dependencies = [
+    "anthropic>=0.75.0",
+    "datasets>=4.4.2",
+    "google-genai>=1.56.0",
+    "ipykernel>=7.1.0",
+    "ipython>=9.8.0",
+    "jinja2>=3.1.6",
+    "jupyter>=1.1.1",
+    "jupyterlab>=4.5.1",
+    "loguru>=0.7.3",
+    "matplotlib>=3.10.8",
+    "mpl-lego",
+    "numpy>=2.4.0",
+    "openai>=2.14.0",
+    "pandas>=2.3.3",
+    "pydantic>=2.12.5",
+    "pytest>=9.0.2",
+    "scikit-learn>=1.8.0",
+    "scipy>=1.16.3",
+    "seaborn>=0.13.2",
+    "tables>=3.10.2",
+    "torch>=2.9.1",
+    "transformers>=4.57.3",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.uv]
+package = true
+
+[tool.uv.sources]
+mpl-lego = { path = "../mpl-lego", editable = true }
