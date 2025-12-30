@@ -1,0 +1,41 @@
+# Exp 0.7 - Google Gemini sweep
+# Baseline experiment: run Tyler's scales across multiple models
+
+prompts:
+  - path: prompts/tyler/compliance.txt
+    schema_name: ComplianceResponse
+  - path: prompts/tyler/deterrence.txt
+    schema_name: DeterrenceResponse
+  - path: prompts/tyler/peers.txt
+    schema_name: PeersResponse
+  - path: prompts/tyler/morality.txt
+    schema_name: MoralityResponse
+  - path: prompts/tyler/obligation.txt
+    schema_name: ObligationResponse
+  - path: prompts/tyler/support_police.txt
+    schema_name: SupportPoliceResponse
+  - path: prompts/tyler/support_courts.txt
+    schema_name: SupportCourtsResponse
+  - path: prompts/tyler/performance_police.txt
+    schema_name: PerformancePoliceResponse
+  - path: prompts/tyler/performance_courts.txt
+    schema_name: PerformanceCourtsResponse
+
+models:
+  - provider: google
+    name: gemini-3-pro-preview
+  - provider: google
+    name: gemini-3-flash-preview
+  - provider: google
+    name: gemini-2.5-pro
+  - provider: google
+    name: gemini-2.5-flash
+  - provider: google
+    name: gemini-2.0-flash
+
+
+temperature: 0.0
+max_completion_tokens: 8000
+experiment_name: exp0.7_tyler
+use_structured_output: false
+

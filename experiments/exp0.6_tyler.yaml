@@ -1,0 +1,41 @@
+# Exp 0.6 - OpenAI sweep
+# Baseline experiment: run Tyler's scales across multiple models
+
+prompts:
+  - path: prompts/tyler/compliance.txt
+    schema_name: ComplianceResponse
+  - path: prompts/tyler/deterrence.txt
+    schema_name: DeterrenceResponse
+  - path: prompts/tyler/peers.txt
+    schema_name: PeersResponse
+  - path: prompts/tyler/morality.txt
+    schema_name: MoralityResponse
+  - path: prompts/tyler/obligation.txt
+    schema_name: ObligationResponse
+  - path: prompts/tyler/support_police.txt
+    schema_name: SupportPoliceResponse
+  - path: prompts/tyler/support_courts.txt
+    schema_name: SupportCourtsResponse
+  - path: prompts/tyler/performance_police.txt
+    schema_name: PerformancePoliceResponse
+  - path: prompts/tyler/performance_courts.txt
+    schema_name: PerformanceCourtsResponse
+
+models:
+  - provider: openai
+    name: gpt-5.2-2025-12-11
+  - provider: openai
+    name: gpt-5.1-2025-11-13
+  - provider: openai
+    name: gpt-5-2025-08-07
+  - provider: openai
+    name: gpt-4.1-2025-04-14
+  - provider: openai
+    name: gpt-4o-2024-11-20
+
+
+temperature: 0.0
+max_completion_tokens: 8000
+experiment_name: exp0.6_tyler
+use_structured_output: false
+
