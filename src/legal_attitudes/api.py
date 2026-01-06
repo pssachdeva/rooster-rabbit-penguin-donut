@@ -1,5 +1,6 @@
 """API query functions for different LLM providers."""
 import json
+import os
 
 from anthropic import Anthropic
 from google import genai
@@ -125,6 +126,38 @@ def query_google(model, prompt_text, temperature, max_tokens, schema_cls, use_st
     return {"raw": raw_text, "json": extracted}
 
 
+def query_openrouter(model, prompt_text, temperature, max_tokens, schema_cls, use_structured_output=True, seed=None):
+    """Call Qwen (or other) models via OpenRouter's OpenAI-compatible API."""
+    client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=os.environ["OPENROUTER_API_KEY"],
+    )
+    kwargs = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt_text}],
+        "max_completion_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    if seed is not None:
+        kwargs["seed"] = seed
+    if use_structured_output:
+        kwargs["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": schema_cls.__name__,
+                "schema": schema_cls.model_json_schema(),
+                "strict": True,
+            },
+        }
+    completion = client.chat.completions.create(**kwargs)
+    raw_text = completion.choices[0].message.content
+    extracted = extract_json(raw_text)
+    if extracted is None:
+        return {"raw": raw_text, "json": make_refusal_response(schema_cls)}
+    return {"raw": raw_text, "json": extracted}
+
+
+
 def run_query(provider, model, prompt_text, temperature, max_tokens, schema_cls, use_structured_output=True, seed=None):
     """Dispatch to the appropriate provider."""
     if provider == "openai":
@@ -133,5 +166,7 @@ def run_query(provider, model, prompt_text, temperature, max_tokens, schema_cls,
         return query_anthropic(model, prompt_text, temperature, max_tokens, schema_cls, use_structured_output)
     if provider == "google":
         return query_google(model, prompt_text, temperature, max_tokens, schema_cls, use_structured_output)
+    if provider == "openrouter":
+        return query_openrouter(model, prompt_text, temperature, max_tokens, schema_cls, use_structured_output, seed)
     raise ValueError(f"Unsupported provider: {provider}")
 
