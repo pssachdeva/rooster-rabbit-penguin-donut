@@ -155,6 +155,7 @@ def check_google_batch_status(batch_id: str) -> dict:
 def download_google_results(batch_id: str, output_dir: Path) -> Path:
     """Download Google/Gemini batch results to a file."""
     import os
+    import requests
 
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
@@ -163,27 +164,61 @@ def download_google_results(batch_id: str, output_dir: Path) -> Path:
     client = genai.Client(api_key=api_key)
     batch = client.batches.get(name=batch_id)
 
-    if not hasattr(batch, 'state') or batch.state.name != "COMPLETED":
+    logger.info(f"Batch object: {batch}")
+
+    if not hasattr(batch, 'state') or batch.state.name != "JOB_STATE_SUCCEEDED":
         status = batch.state.name if hasattr(batch, 'state') else "UNKNOWN"
         raise RuntimeError(f"Batch not completed yet. Status: {status}")
 
-    # Download the output file
-    if not hasattr(batch, 'output_uri') or not batch.output_uri:
-        raise RuntimeError("Batch completed but no output URI available")
+    # Get the destination file name from batch.dest.file_name
+    dest = getattr(batch, 'dest', None)
+    if not dest:
+        raise RuntimeError(f"Batch completed but no dest available. Batch: {batch}")
 
-    # The output_uri is a GCS URI, need to download the file
-    output_file = client.files.get(name=batch.output_uri)
+    # dest is a BatchJobDestination object with file_name attribute
+    file_name = getattr(dest, 'file_name', None)
+    if not file_name:
+        raise RuntimeError(f"Batch dest has no file_name. dest: {dest}")
 
-    # Download file content
+    logger.info(f"Downloading results from: {file_name}")
+
     output_path = output_dir / "batch_output.jsonl"
-    # Note: This may need adjustment based on actual Gemini API
-    # You might need to use the files.download() method or similar
-    with open(output_path, "wb") as f:
-        # This is a placeholder - actual implementation may vary
-        f.write(output_file.read())
 
-    logger.info(f"Downloaded batch output to {output_path}")
-    return output_path
+    # Workaround for Google bug #1759: Batch API generates file IDs > 40 chars
+    # which the Files API rejects. Use direct HTTP download instead.
+    # See: https://github.com/googleapis/python-genai/issues/1759
+    try:
+        # Construct direct download URL
+        # file_name is like "files/batch-xxx", we need just the ID part
+        file_id = file_name.replace("files/", "")
+        download_url = f"https://generativelanguage.googleapis.com/v1beta/{file_name}:download?alt=media&key={api_key}"
+
+        logger.info(f"Downloading via direct URL (workaround for bug #1759)")
+        response = requests.get(download_url)
+        response.raise_for_status()
+
+        # Write content to file
+        with open(output_path, "wb") as f:
+            f.write(response.content)
+
+        logger.info(f"Downloaded batch output to {output_path} ({len(response.content)} bytes)")
+        return output_path
+
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"HTTP error downloading file: {e}")
+        logger.error(f"Response: {e.response.text if e.response else 'No response'}")
+        raise RuntimeError(
+            f"Could not download batch results file. File: {file_name}\n"
+            f"Error: {e}\n"
+            f"Batch object: {batch}"
+        )
+    except Exception as e:
+        logger.error(f"Failed to download file {file_name}: {e}")
+        raise RuntimeError(
+            f"Could not download batch results file. File: {file_name}\n"
+            f"Error: {e}\n"
+            f"Batch object: {batch}"
+        )
 
 
 def parse_and_save_results(
@@ -235,11 +270,36 @@ def parse_and_save_results(
                 custom_id = result.get("key")
                 response = result.get("response")
                 if not response or "error" in response:
-                    logger.error(f"Failed request: {custom_id} - {response.get('error')}")
+                    logger.error(f"Failed request: {custom_id} - {response.get('error') if response else 'no response'}")
                     results_failed += 1
                     continue
-                # Extract text from Gemini response
-                raw_text = response["candidates"][0]["content"]["parts"][0]["text"]
+
+                # Extract text from Gemini response - handle different response structures
+                try:
+                    candidates = response.get("candidates", [])
+                    if not candidates:
+                        logger.error(f"No candidates in response for {custom_id}: {response}")
+                        results_failed += 1
+                        continue
+
+                    content = candidates[0].get("content", {})
+                    parts = content.get("parts", [])
+
+                    if parts:
+                        raw_text = parts[0].get("text", "")
+                    elif "text" in content:
+                        # Alternative structure: content.text directly
+                        raw_text = content["text"]
+                    else:
+                        logger.error(f"Could not extract text from response for {custom_id}: {response}")
+                        results_failed += 1
+                        continue
+
+                except (KeyError, IndexError, TypeError) as e:
+                    logger.error(f"Error parsing Google response for {custom_id}: {e}")
+                    logger.debug(f"Response structure: {response}")
+                    results_failed += 1
+                    continue
 
             else:
                 raise ValueError(f"Unknown provider: {provider}")
@@ -299,7 +359,7 @@ def create_results_dataframe(experiment_dir: Path, provider: str, model: str) ->
     """Create a tidy dataframe from all result files.
 
     Returns:
-        DataFrame with columns: provider, model, scale, repeat, item, response
+        DataFrame with columns: provider, model, scale, repeat, item, response, raw_output
     """
     safe_model = model.replace("/", "_").replace(":", "_")
     model_dir = experiment_dir / f"{provider}_{safe_model}"
@@ -326,6 +386,7 @@ def create_results_dataframe(experiment_dir: Path, provider: str, model: str) ->
         try:
             result = json.loads(result_file.read_text())
             json_field = result["json"]
+            raw_output = result.get("raw", "")
 
             # Handle case where json might already be a dict or a string
             if isinstance(json_field, dict):
@@ -345,6 +406,7 @@ def create_results_dataframe(experiment_dir: Path, provider: str, model: str) ->
                     "repeat": repeat_num,
                     "item": item_num,
                     "response": response_value,
+                    "raw_output": raw_output,
                 })
         except json.JSONDecodeError as e:
             logger.warning(f"Invalid JSON in {result_file.name} (likely placeholder/refusal) - skipping")
@@ -358,25 +420,22 @@ def create_results_dataframe(experiment_dir: Path, provider: str, model: str) ->
     return df
 
 
-def main(config_path: Path, status_only: bool = False, force: bool = False):
-    """Main processing logic."""
+def process_single_batch(
+    batch_entry: dict,
+    experiment_dir: Path,
+    cfg: BatchConfig,
+    status_only: bool,
+    force: bool,
+) -> pd.DataFrame | None:
+    """Process a single batch entry.
 
-    # Load config
-    raw = yaml.safe_load(config_path.read_text())
-    cfg = BatchConfig(**raw)
+    Returns DataFrame of results, or None if batch not ready or status_only.
+    """
+    batch_id = batch_entry["batch_id"]
+    provider = batch_entry["provider"]
+    model = batch_entry["model"]
+    safe_model = model.replace("/", "_").replace(":", "_")
 
-    # Derive experiment directory from config
-    experiment_dir = RESULTS_DIR / cfg.experiment_name
-
-    # Load metadata
-    metadata = load_batch_metadata(experiment_dir)
-    batch_id = metadata["batch_id"]
-    provider = metadata["provider"]
-    model = metadata["model"]
-
-    logger.info(f"Config: {config_path}")
-    logger.info(f"Experiment: {cfg.experiment_name}")
-    logger.info(f"Experiment dir: {experiment_dir}")
     logger.info(f"Provider: {provider}")
     logger.info(f"Model: {model}")
     logger.info(f"Batch ID: {batch_id}")
@@ -395,20 +454,18 @@ def main(config_path: Path, status_only: bool = False, force: bool = False):
     logger.info(f"Request counts: {status_info['request_counts']}")
 
     if status_only:
-        logger.info("Status check complete (--status-only flag set)")
-        return
+        return None
 
     # Check if completed
     completed_statuses = {
         "openai": "completed",
         "anthropic": "ended",
-        "google": "COMPLETED",
+        "google": "JOB_STATE_SUCCEEDED",
     }
 
     if status_info["status"] != completed_statuses.get(provider):
         logger.warning(f"Batch not yet completed. Current status: {status_info['status']}")
-        logger.info("Run with --status-only to check status without downloading")
-        return
+        return None
 
     # Download results
     logger.info("Downloading batch results...")
@@ -419,9 +476,14 @@ def main(config_path: Path, status_only: bool = False, force: bool = False):
     elif provider == "google":
         output_path = download_google_results(batch_id, experiment_dir)
 
+    # Rename output file to be model-specific
+    model_output_path = experiment_dir / f"batch_output_{provider}_{safe_model}.jsonl"
+    if output_path != model_output_path:
+        output_path.rename(model_output_path)
+        output_path = model_output_path
+
     # Parse and save individual results
     logger.info("Parsing and saving individual results...")
-
     parse_and_save_results(
         output_path=output_path,
         experiment_dir=experiment_dir,
@@ -431,20 +493,77 @@ def main(config_path: Path, status_only: bool = False, force: bool = False):
         force=force,
     )
 
-    # Create CSV dataframe
+    # Create dataframe for this model
     logger.info("Creating results dataframe...")
     df = create_results_dataframe(experiment_dir, provider, model)
 
-    if not df.empty:
+    return df
+
+
+def main(config_path: Path, status_only: bool = False, force: bool = False):
+    """Main processing logic for multiple batches."""
+
+    # Load config
+    raw = yaml.safe_load(config_path.read_text())
+    cfg = BatchConfig(**raw)
+
+    # Derive experiment directory from config
+    experiment_dir = RESULTS_DIR / cfg.experiment_name
+
+    # Load metadata
+    metadata = load_batch_metadata(experiment_dir)
+    batches = metadata["batches"]
+
+    logger.info(f"Config: {config_path}")
+    logger.info(f"Experiment: {cfg.experiment_name}")
+    logger.info(f"Experiment dir: {experiment_dir}")
+    logger.info(f"Number of batches: {len(batches)}")
+
+    # Process each batch
+    all_dfs = []
+    completed_count = 0
+    pending_count = 0
+
+    for i, batch_entry in enumerate(batches, 1):
+        logger.info("=" * 60)
+        logger.info(f"Processing batch {i}/{len(batches)}")
+
+        df = process_single_batch(
+            batch_entry=batch_entry,
+            experiment_dir=experiment_dir,
+            cfg=cfg,
+            status_only=status_only,
+            force=force,
+        )
+
+        if df is not None and not df.empty:
+            all_dfs.append(df)
+            completed_count += 1
+        elif not status_only:
+            pending_count += 1
+
+    if status_only:
+        logger.info("=" * 60)
+        logger.info("Status check complete (--status-only flag set)")
+        return
+
+    # Combine all results into a single CSV
+    logger.info("=" * 60)
+    if all_dfs:
+        combined_df = pd.concat(all_dfs, ignore_index=True)
         csv_path = experiment_dir / f"{cfg.experiment_name}.csv"
-        df.to_csv(csv_path, index=False)
-        logger.info(f"Saved results CSV to: {csv_path}")
+        combined_df.to_csv(csv_path, index=False)
+        logger.info(f"Saved combined results CSV to: {csv_path}")
+        logger.info(f"Total rows: {len(combined_df)}")
+    else:
+        logger.warning("No results to save - all batches may still be pending")
 
     logger.info("=" * 60)
-    logger.info("Batch processing complete!")
+    logger.info(f"Batch processing complete!")
+    logger.info(f"Completed: {completed_count}/{len(batches)} batches")
+    if pending_count > 0:
+        logger.warning(f"Pending: {pending_count} batches still processing")
     logger.info(f"Results saved to: {experiment_dir}")
-    if not df.empty:
-        logger.info(f"CSV: {csv_path}")
 
 
 if __name__ == "__main__":

@@ -3,10 +3,10 @@
 Usage:
     python scripts/submit_batch.py experiments/exp_batch.yaml
 
-Requirements:
-    - Experiment config must have exactly ONE provider and ONE model
-    - All scales × repeats will be submitted in a single batch
-    - Batch ID and metadata saved to experiment folder for later processing
+Supports multiple models:
+    - Each model in the config gets its own batch
+    - All batch IDs and metadata saved to experiment folder
+    - Process results with: python scripts/process_batch_results.py <config>
 """
 import argparse
 import json
@@ -25,31 +25,25 @@ from legal_attitudes.config import BatchConfig
 from legal_attitudes.utils import RESULTS_DIR, ROOT, setup_logging
 
 
-def save_batch_metadata(cfg: BatchConfig, batch_info: dict, config_path: Path):
-    """Save batch metadata to experiment folder."""
+def save_batch_metadata(cfg: BatchConfig, batch_entries: list, config_path: Path):
+    """Save batch metadata to experiment folder.
+
+    Args:
+        cfg: Experiment config
+        batch_entries: List of batch info dicts, one per model
+        config_path: Path to the config file
+    """
     experiment_dir = RESULTS_DIR / cfg.experiment_name
     experiment_dir.mkdir(parents=True, exist_ok=True)
 
-    model_cfg = cfg.models[0]
-
     metadata = {
-        "batch_id": batch_info["batch_id"],
-        "provider": model_cfg.provider,
-        "model": model_cfg.name,
+        "experiment_name": cfg.experiment_name,
+        "config_path": str(config_path),
         "submitted_at": datetime.now(timezone.utc).isoformat(),
-        "status": batch_info["status"],
-        "num_requests": batch_info["num_requests"],
         "num_scales": len(cfg.prompts),
         "num_repeats": cfg.repeats,
-        "config_path": str(config_path),
-        "experiment_name": cfg.experiment_name,
+        "batches": batch_entries,
     }
-
-    # Add provider-specific fields
-    if "input_file_id" in batch_info:
-        metadata["input_file_id"] = batch_info["input_file_id"]
-    if "file_name" in batch_info:
-        metadata["file_name"] = batch_info["file_name"]
 
     metadata_path = experiment_dir / "batch_metadata.json"
     metadata_path.write_text(json.dumps(metadata, indent=2))
@@ -59,27 +53,17 @@ def save_batch_metadata(cfg: BatchConfig, batch_info: dict, config_path: Path):
 
 
 def main(config_path: str):
-    """Load config, create batch, submit, and save metadata."""
+    """Load config, create batches for each model, submit, and save metadata."""
     cfg_path = Path(config_path).expanduser().resolve()
     raw = yaml.safe_load(cfg_path.read_text())
     cfg = BatchConfig(**raw)
 
-    # Validate single provider/model
-    if len(cfg.models) != 1:
-        raise ValueError(
-            f"Batch experiments require exactly ONE model. "
-            f"Found {len(cfg.models)} models in config."
-        )
-
-    model_cfg = cfg.models[0]
-    provider = model_cfg.provider
-
     logger.info(f"Experiment: {cfg.experiment_name}")
-    logger.info(f"Provider: {provider}")
-    logger.info(f"Model: {model_cfg.name}")
+    logger.info(f"Models: {len(cfg.models)}")
     logger.info(f"Scales: {len(cfg.prompts)}")
     logger.info(f"Repeats: {cfg.repeats}")
-    logger.info(f"Total requests: {len(cfg.prompts) * cfg.repeats}")
+    logger.info(f"Requests per model: {len(cfg.prompts) * cfg.repeats}")
+    logger.info(f"Total requests: {len(cfg.prompts) * cfg.repeats * len(cfg.models)}")
 
     # Load all prompts
     prompt_texts = {}
@@ -87,30 +71,73 @@ def main(config_path: str):
         prompt_path = ROOT / prompt_cfg.path
         prompt_texts[prompt_path.stem] = prompt_path.read_text()
 
-    # Setup batch input path
+    # Setup experiment directory
     experiment_dir = RESULTS_DIR / cfg.experiment_name
     experiment_dir.mkdir(parents=True, exist_ok=True)
-    batch_input_path = experiment_dir / "batch_input.jsonl"
 
-    # Create and submit batch based on provider
-    if provider == "openai":
-        batch_info = create_openai_batch(cfg, prompt_texts, batch_input_path)
-    elif provider == "anthropic":
-        batch_info = create_anthropic_batch(cfg, prompt_texts, batch_input_path)
-    elif provider == "google":
-        batch_info = create_google_batch(cfg, prompt_texts, batch_input_path)
-    else:
-        raise ValueError(f"Unsupported provider for batch: {provider}")
+    # Submit a batch for each model
+    batch_entries = []
+    for model_cfg in cfg.models:
+        provider = model_cfg.provider
+        model_name = model_cfg.name
+        safe_model = model_name.replace("/", "_").replace(":", "_")
 
-    # Save metadata
-    metadata_path = save_batch_metadata(cfg, batch_info, cfg_path)
+        logger.info("=" * 60)
+        logger.info(f"Submitting batch for {provider}/{model_name}")
 
-    logger.info("Batch submitted successfully!")
-    logger.info(f"Batch ID: {batch_info['batch_id']}")
-    logger.info(f"Status: {batch_info['status']}")
+        # Create a single-model config for this batch
+        single_model_cfg = BatchConfig(
+            experiment_name=cfg.experiment_name,
+            prompts=cfg.prompts,
+            models=[model_cfg],
+            temperature=cfg.temperature,
+            max_completion_tokens=cfg.max_completion_tokens,
+            seed=cfg.seed,
+            use_structured_output=cfg.use_structured_output,
+            repeats=cfg.repeats,
+        )
+
+        # Batch input path per model
+        batch_input_path = experiment_dir / f"batch_input_{provider}_{safe_model}.jsonl"
+
+        # Create and submit batch based on provider
+        if provider == "openai":
+            batch_info = create_openai_batch(single_model_cfg, prompt_texts, batch_input_path)
+        elif provider == "anthropic":
+            batch_info = create_anthropic_batch(single_model_cfg, prompt_texts, batch_input_path)
+        elif provider == "google":
+            batch_info = create_google_batch(single_model_cfg, prompt_texts, batch_input_path)
+        else:
+            raise ValueError(f"Unsupported provider for batch: {provider}")
+
+        # Build batch entry
+        batch_entry = {
+            "batch_id": batch_info["batch_id"],
+            "provider": provider,
+            "model": model_name,
+            "status": batch_info["status"],
+            "num_requests": batch_info["num_requests"],
+        }
+
+        # Add provider-specific fields
+        if "input_file_id" in batch_info:
+            batch_entry["input_file_id"] = batch_info["input_file_id"]
+        if "file_name" in batch_info:
+            batch_entry["file_name"] = batch_info["file_name"]
+
+        batch_entries.append(batch_entry)
+
+        logger.info(f"  Batch ID: {batch_info['batch_id']}")
+        logger.info(f"  Status: {batch_info['status']}")
+
+    # Save metadata with all batches
+    metadata_path = save_batch_metadata(cfg, batch_entries, cfg_path)
+
+    logger.info("=" * 60)
+    logger.info(f"All {len(batch_entries)} batches submitted successfully!")
     logger.info(f"Metadata: {metadata_path}")
     logger.info("Next steps:")
-    logger.info("1. Wait for batch to complete (check provider dashboard)")
+    logger.info("1. Wait for batches to complete (check provider dashboard)")
     logger.info(f"2. Run: python scripts/process_batch_results.py {cfg_path}")
 
 
