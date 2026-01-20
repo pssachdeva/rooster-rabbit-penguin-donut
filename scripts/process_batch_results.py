@@ -9,12 +9,16 @@ Usage:
     # Force re-download even if results exist
     python scripts/process_batch_results.py experiments/exp1.2.0_batch_openai.yaml --force
 
+    # Concatenate results to an existing file (or create it)
+    python scripts/process_batch_results.py experiments/exp1.2.0_batch_openai.yaml --file data/combined.csv
+
 This script:
 1. Loads the experiment config to find the experiment folder
 2. Reads batch_metadata.json from the experiment folder
 3. Checks batch status with the provider
 4. Downloads results if batch is complete
 5. Parses and saves individual result files
+6. Outputs CSV with columns: provider, model, temperature, scale, repeat, item, response, raw_output
 """
 import argparse
 import json
@@ -355,11 +359,13 @@ def parse_and_save_results(
     logger.info(f"Results: {results_parsed} saved, {results_skipped} skipped, {results_failed} failed")
 
 
-def create_results_dataframe(experiment_dir: Path, provider: str, model: str) -> pd.DataFrame:
+def create_results_dataframe(
+    experiment_dir: Path, provider: str, model: str, temperature: float
+) -> pd.DataFrame:
     """Create a tidy dataframe from all result files.
 
     Returns:
-        DataFrame with columns: provider, model, scale, repeat, item, response, raw_output
+        DataFrame with columns: provider, model, temperature, scale, repeat, item, response, raw_output
     """
     safe_model = model.replace("/", "_").replace(":", "_")
     model_dir = experiment_dir / f"{provider}_{safe_model}"
@@ -402,6 +408,7 @@ def create_results_dataframe(experiment_dir: Path, provider: str, model: str) ->
                 rows.append({
                     "provider": provider,
                     "model": model,
+                    "temperature": temperature,
                     "scale": scale_name,
                     "repeat": repeat_num,
                     "item": item_num,
@@ -495,12 +502,17 @@ def process_single_batch(
 
     # Create dataframe for this model
     logger.info("Creating results dataframe...")
-    df = create_results_dataframe(experiment_dir, provider, model)
+    df = create_results_dataframe(experiment_dir, provider, model, cfg.temperature)
 
     return df
 
 
-def main(config_path: Path, status_only: bool = False, force: bool = False):
+def main(
+    config_path: Path,
+    status_only: bool = False,
+    force: bool = False,
+    output_file: Path | None = None,
+):
     """Main processing logic for multiple batches."""
 
     # Load config
@@ -551,10 +563,25 @@ def main(config_path: Path, status_only: bool = False, force: bool = False):
     logger.info("=" * 60)
     if all_dfs:
         combined_df = pd.concat(all_dfs, ignore_index=True)
+
+        # Save to experiment directory
         csv_path = experiment_dir / f"{cfg.experiment_name}.csv"
         combined_df.to_csv(csv_path, index=False)
         logger.info(f"Saved combined results CSV to: {csv_path}")
         logger.info(f"Total rows: {len(combined_df)}")
+
+        # If --file specified, concatenate to that file
+        if output_file:
+            if output_file.exists():
+                existing_df = pd.read_csv(output_file)
+                merged_df = pd.concat([existing_df, combined_df], ignore_index=True)
+                merged_df.to_csv(output_file, index=False)
+                logger.info(f"Concatenated results to existing file: {output_file}")
+                logger.info(f"Previous rows: {len(existing_df)}, Added: {len(combined_df)}, Total: {len(merged_df)}")
+            else:
+                combined_df.to_csv(output_file, index=False)
+                logger.info(f"Created new output file: {output_file}")
+                logger.info(f"Total rows: {len(combined_df)}")
     else:
         logger.warning("No results to save - all batches may still be pending")
 
@@ -577,13 +604,22 @@ if __name__ == "__main__":
     )
     parser.add_argument("--status-only", action="store_true", help="Only check status, don't download results")
     parser.add_argument("--force", action="store_true", help="Force re-download and overwrite existing results")
+    parser.add_argument(
+        "--file",
+        help="Optional output file to concatenate results to (creates if doesn't exist)"
+    )
     args = parser.parse_args()
 
     try:
         config_path = Path(args.config).expanduser().resolve()
         if not config_path.exists():
             raise FileNotFoundError(f"Config file not found: {config_path}")
-        main(config_path, args.status_only, args.force)
+
+        output_file = None
+        if args.file:
+            output_file = Path(args.file).expanduser().resolve()
+
+        main(config_path, args.status_only, args.force, output_file)
     except Exception as exc:
         logger.error(f"Failed to process batch: {exc}")
         raise

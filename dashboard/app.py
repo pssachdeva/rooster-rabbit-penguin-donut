@@ -451,8 +451,8 @@ def main():
         return
 
     # Main content tabs - Response Summary first
-    tab1, tab2, tab3, tab4 = st.tabs(
-        ["Response Summary", "Item Summary", "Raw Response Viewer", "Refusal Rate Tracking"]
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+        ["Response Summary", "Item Summary", "Raw Response Viewer", "Refusal Rate Tracking", "Item Correlations"]
     )
 
     # Tab 1: Response Summary (now first)
@@ -478,7 +478,7 @@ def main():
 
             st.dataframe(
                 pivot_mean.style.format("{:.2f}").background_gradient(
-                    cmap="RdYlGn", axis=None
+                    cmap="RdYlGn", axis=None, vmin=1, vmax=4
                 ),
                 use_container_width=True,
                 hide_index=False,
@@ -1126,6 +1126,145 @@ def main():
                 "_index": st.column_config.TextColumn("Model", width=180),
             },
         )
+
+    # Tab 5: Item Correlations
+    with tab5:
+        st.markdown("<h3 style='text-align: center;'>Average Pairwise Item Correlations by Scale</h3>", unsafe_allow_html=True)
+        st.markdown(
+            "<p style='text-align: center; color: #666;'>Average Pearson correlation between all pairs of items within each scale (excluding refusals)</p>",
+            unsafe_allow_html=True,
+        )
+
+        # Exclude refusals
+        corr_df = filtered_df[
+            (filtered_df["response"] != REFUSAL_CODE) &
+            (filtered_df["response"].notna())
+        ].copy()
+
+        if not corr_df.empty:
+            from itertools import combinations
+
+            correlation_results = []
+
+            for scale in selected_scales:
+                scale_data = corr_df[corr_df["scale"] == scale].copy()
+
+                if scale_data.empty:
+                    continue
+
+                # Filter to numeric items only BEFORE pivoting
+                def is_numeric_item(val):
+                    try:
+                        int(val)
+                        return True
+                    except (ValueError, TypeError):
+                        return False
+
+                scale_data = scale_data[scale_data["item"].apply(is_numeric_item)]
+
+                if scale_data.empty:
+                    continue
+
+                # Convert item to int for consistent handling
+                scale_data["item"] = scale_data["item"].apply(lambda x: int(x))
+
+                # Pivot: rows = (model, repeat), columns = items
+                # Each row represents one "observation" (a single survey response)
+                pivot = scale_data.pivot_table(
+                    index=["model", "repeat"],
+                    columns="item",
+                    values="response",
+                    aggfunc="first"  # Should be unique per model/repeat/item
+                )
+
+                item_cols = sorted(pivot.columns.tolist())
+                if len(item_cols) < 2:
+                    continue
+
+                # Calculate all pairwise correlations
+                # Use only rows where both items are present for each pair
+                n_possible_pairs = len(item_cols) * (len(item_cols) - 1) // 2
+                pairwise_corrs = []
+                nan_pairs = 0
+
+                for item1, item2 in combinations(item_cols, 2):
+                    pair_data = pivot[[item1, item2]].dropna()
+                    if len(pair_data) >= 3:  # Need at least 3 observations
+                        r = pair_data[item1].corr(pair_data[item2])
+                        if not np.isnan(r):
+                            pairwise_corrs.append(r)
+                        else:
+                            nan_pairs += 1
+                    else:
+                        nan_pairs += 1
+
+                avg_corr = np.mean(pairwise_corrs) if pairwise_corrs else np.nan
+                correlation_results.append({
+                    "Scale": get_scale_label(scale),
+                    "Avg Correlation": avg_corr,
+                    "Num Items": len(item_cols),
+                    "Valid Pairs": len(pairwise_corrs),
+                    "Total Pairs": n_possible_pairs,
+                    "NaN Pairs": nan_pairs,
+                })
+
+            if correlation_results:
+                corr_results_df = pd.DataFrame(correlation_results)
+                corr_results_df = corr_results_df.set_index("Scale")
+
+                st.dataframe(
+                    corr_results_df.style.format({
+                        "Avg Correlation": "{:.3f}",
+                        "Num Items": "{:.0f}",
+                        "Valid Pairs": "{:.0f}",
+                        "Total Pairs": "{:.0f}",
+                        "NaN Pairs": "{:.0f}",
+                    }).background_gradient(
+                        cmap="RdYlGn", axis=None, subset=["Avg Correlation"], vmin=0, vmax=1
+                    ),
+                    use_container_width=True,
+                    hide_index=False,
+                    height=(len(corr_results_df) + 1) * 35 + 3,
+                )
+            else:
+                st.info("Not enough data to calculate correlations.")
+
+            # Model correlation matrix based on scale averages
+            st.markdown("---")
+            st.markdown("<h3 style='text-align: center;'>Model Correlation Matrix (by Scale Averages)</h3>", unsafe_allow_html=True)
+            st.markdown(
+                "<p style='text-align: center; color: #666;'>Correlation between models based on their average responses across scales</p>",
+                unsafe_allow_html=True,
+            )
+
+            # Calculate average response per model per scale
+            model_scale_avg = corr_df.groupby(["model", "scale"])["response"].mean().unstack(level="scale")
+
+            if len(model_scale_avg) >= 2 and len(model_scale_avg.columns) >= 2:
+                # Calculate correlation matrix between models
+                # Transpose so models are columns, scales are rows, then correlate
+                model_corr_matrix = model_scale_avg.T.corr()
+
+                # Replace model IDs with labels
+                model_corr_matrix.index = [get_model_label(m) for m in model_corr_matrix.index]
+                model_corr_matrix.columns = [get_model_label(m) for m in model_corr_matrix.columns]
+
+                # Sort by model capability
+                sorted_labels = sorted(model_corr_matrix.index, key=get_model_label_sort_key)
+                model_corr_matrix = model_corr_matrix.reindex(index=sorted_labels, columns=sorted_labels)
+
+                st.dataframe(
+                    model_corr_matrix.style.format("{:.3f}").background_gradient(
+                        cmap="RdYlGn", axis=None, vmin=-1, vmax=1
+                    ),
+                    use_container_width=True,
+                    hide_index=False,
+                    height=(len(model_corr_matrix) + 1) * 35 + 3,
+                )
+            else:
+                st.info("Need at least 2 models and 2 scales to calculate model correlations.")
+        else:
+            st.info("No non-refusal data available for correlation analysis.")
 
 
 if __name__ == "__main__":
