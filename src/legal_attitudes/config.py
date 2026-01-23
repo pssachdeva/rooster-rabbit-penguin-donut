@@ -27,4 +27,7 @@ class BatchConfig(BaseModel):
     seed: int | None = Field(default=None)
     repeats: int = Field(default=1, ge=1)
     concurrency: int = Field(default=5, ge=1)
+    # Retry settings for async experiments
+    max_retries: int = Field(default=10, ge=0)
+    initial_backoff: float = Field(default=5.0, ge=0.1)
 

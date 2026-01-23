@@ -3,11 +3,15 @@
 Usage:
     python scripts/process_async_experiment.py experiments/exp1.1.1_tyler_t=1.yaml
 
+    # Concatenate results to an existing file (or create it)
+    python scripts/process_async_experiment.py experiments/exp1.1.1_tyler_t=1.yaml --file data/combined.csv
+
 This script:
 1. Loads the experiment config to find the experiment folder
 2. Reads all result JSON files from provider_model subdirectories
-3. Creates a tidy dataframe with columns: provider, model, scale, repeat, item, response
+3. Creates a tidy dataframe with columns: provider, model, temperature, scale, repeat, item, response, raw_output
 4. Saves as CSV in the experiment folder
+5. Optionally concatenates to a specified output file (--file)
 """
 import argparse
 import json
@@ -42,14 +46,15 @@ def parse_model_dir_name(dir_name: str) -> tuple[str, str]:
     return provider, model
 
 
-def create_results_dataframe(experiment_dir: Path) -> pd.DataFrame:
+def create_results_dataframe(experiment_dir: Path, temperature: float) -> pd.DataFrame:
     """Create a tidy dataframe from all async experiment result files.
 
     Args:
         experiment_dir: Path to experiment folder (e.g., results/exp1.1.1_tyler_t=1)
+        temperature: Temperature setting from experiment config
 
     Returns:
-        DataFrame with columns: provider, model, scale, repeat, item, response
+        DataFrame with columns: provider, model, temperature, scale, repeat, item, response, raw_output
     """
     rows = []
 
@@ -97,6 +102,9 @@ def create_results_dataframe(experiment_dir: Path) -> pd.DataFrame:
                     logger.warning(f"No json field in {result_file}")
                     continue
 
+                # Get raw output
+                raw_output = result.get("raw", "")
+
                 # Handle case where json might already be a dict or a string
                 if isinstance(json_field, dict):
                     parsed_json = json_field
@@ -111,10 +119,12 @@ def create_results_dataframe(experiment_dir: Path) -> pd.DataFrame:
                     rows.append({
                         "provider": provider,
                         "model": model,
+                        "temperature": temperature,
                         "scale": scale_name,
                         "repeat": repeat_num,
                         "item": item_num,
                         "response": response_value,
+                        "raw_output": raw_output,
                     })
             except json.JSONDecodeError as e:
                 logger.warning(f"Invalid JSON in {result_file.name} (likely placeholder/refusal) - skipping")
@@ -137,7 +147,7 @@ def create_results_dataframe(experiment_dir: Path) -> pd.DataFrame:
     return df
 
 
-def main(config_path: Path):
+def main(config_path: Path, output_file: Path | None = None):
     """Main processing logic."""
 
     # Load config
@@ -159,16 +169,29 @@ def main(config_path: Path):
 
     # Create dataframe
     logger.info("Creating results dataframe...")
-    df = create_results_dataframe(experiment_dir)
+    df = create_results_dataframe(experiment_dir, cfg.temperature)
 
     if df.empty:
         logger.warning("No results to save")
         return
 
-    # Save CSV
+    # Save CSV to experiment directory
     csv_path = experiment_dir / f"{cfg.experiment_name}.csv"
     df.to_csv(csv_path, index=False)
     logger.info(f"Saved results CSV to: {csv_path}")
+
+    # If --file specified, concatenate to that file
+    if output_file:
+        if output_file.exists():
+            existing_df = pd.read_csv(output_file)
+            merged_df = pd.concat([existing_df, df], ignore_index=True)
+            merged_df.to_csv(output_file, index=False)
+            logger.info(f"Concatenated results to existing file: {output_file}")
+            logger.info(f"Previous rows: {len(existing_df)}, Added: {len(df)}, Total: {len(merged_df)}")
+        else:
+            df.to_csv(output_file, index=False)
+            logger.info(f"Created new output file: {output_file}")
+            logger.info(f"Total rows: {len(df)}")
 
     logger.info("=" * 60)
     logger.info("Processing complete!")
@@ -185,13 +208,22 @@ if __name__ == "__main__":
         "config",
         help="Path to experiment config file (e.g., experiments/exp1.1.1_tyler_t=1.yaml)"
     )
+    parser.add_argument(
+        "--file",
+        help="Optional output file to concatenate results to (creates if doesn't exist)"
+    )
     args = parser.parse_args()
 
     try:
         config_path = Path(args.config).expanduser().resolve()
         if not config_path.exists():
             raise FileNotFoundError(f"Config file not found: {config_path}")
-        main(config_path)
+
+        output_file = None
+        if args.file:
+            output_file = Path(args.file).expanduser().resolve()
+
+        main(config_path, output_file)
     except Exception as exc:
         logger.error(f"Failed to process experiment: {exc}")
         raise

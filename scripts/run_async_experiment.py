@@ -27,6 +27,10 @@ def main(config_path: str):
     temperature = cfg.get("temperature", 1.0)
     max_tokens = cfg.get("max_completion_tokens", 500)
     repeats = cfg.get("repeats", 50)
+    # Rate limit handling settings
+    chunk_size = cfg.get("concurrency", 5)
+    max_retries = cfg.get("max_retries", 10)
+    initial_backoff = cfg.get("initial_backoff", 5.0)
 
     # Build list of (prompt, model) pairs for progress bar
     tasks = [
@@ -76,6 +80,9 @@ def main(config_path: str):
             repeats=len(missing_run_ids),
             temperature=temperature,
             max_tokens=max_tokens,
+            chunk_size=chunk_size,
+            max_retries=max_retries,
+            initial_backoff=initial_backoff,
         )
         model_dir.mkdir(parents=True, exist_ok=True)
         for r, run_id in zip(results, missing_run_ids):

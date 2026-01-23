@@ -1,5 +1,6 @@
 """Helpers for running repeated model queries via LiteLLM batch_completion and provider batch APIs."""
 import json
+import time
 from pathlib import Path
 
 from anthropic import Anthropic
@@ -20,8 +21,11 @@ def run_repeats(
     repeats: int = 1,
     temperature: float = 1.0,
     max_tokens: int = 500,
+    chunk_size: int = 5,
+    max_retries: int = 10,
+    initial_backoff: float = 5.0,
 ) -> list[dict]:
-    """Run the same prompt N times using LiteLLM batch_completion.
+    """Run the same prompt N times using LiteLLM batch_completion with chunking and retries.
 
     Args:
         prompt_text: The prompt to send.
@@ -30,38 +34,98 @@ def run_repeats(
         repeats: Number of times to run.
         temperature: Sampling temperature.
         max_tokens: Max tokens in response.
+        chunk_size: Number of requests to send concurrently per chunk.
+        max_retries: Maximum retry attempts for failed requests.
+        initial_backoff: Initial backoff time in seconds (doubles each retry).
 
     Returns:
         List of dicts with run_index, raw, json keys.
     """
-    # Look up the Pydantic schema for JSON extraction and refusal handling
     schema_cls = get_schema(schema_name)
 
-    # Build N identical message lists—one per repeat
-    messages = [[{"role": "user", "content": prompt_text}] for _ in range(repeats)]
+    # Track results by their original index
+    results: dict[int, dict] = {}
+    pending_indices = list(range(repeats))
 
-    # batch_completion sends all requests concurrently and handles retries
-    responses = batch_completion(
-        model=model,
-        messages=messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
+    retry_count = 0
+    backoff = initial_backoff
 
-    # Process each response: extract JSON or mark as refusal
-    results = []
-    for i, resp in enumerate(responses):
-        if isinstance(resp, Exception):
-            print(f"Error: {resp}")
-            break
-        # Get raw text from response
-        raw = resp.choices[0].message.content
-        # Try to extract JSON; if missing/malformed, treat as refusal
-        extracted = extract_json(raw)
-        json_out = extracted if extracted else make_refusal_response(schema_cls)
-        results.append({"run_index": i, "raw": raw, "json": json_out})
+    while pending_indices and retry_count <= max_retries:
+        if retry_count > 0:
+            logger.warning(
+                f"Retry {retry_count}/{max_retries}: {len(pending_indices)} pending requests, "
+                f"backing off {backoff:.1f}s"
+            )
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 120.0)  # Cap at 2 minutes
 
-    return results
+        # Process in chunks
+        still_pending = []
+        for chunk_start in range(0, len(pending_indices), chunk_size):
+            chunk_indices = pending_indices[chunk_start : chunk_start + chunk_size]
+
+            # Build messages for this chunk
+            messages = [[{"role": "user", "content": prompt_text}] for _ in chunk_indices]
+
+            try:
+                responses = batch_completion(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+            except Exception as e:
+                # Entire batch failed (e.g., connection error)
+                logger.warning(f"Chunk failed with exception: {e}")
+                still_pending.extend(chunk_indices)
+                continue
+
+            # Process each response in the chunk
+            for idx, resp in zip(chunk_indices, responses):
+                if isinstance(resp, Exception):
+                    # Check if it's a rate limit error
+                    err_str = str(resp).lower()
+                    if "rate" in err_str or "429" in err_str or "limit" in err_str:
+                        logger.debug(f"Rate limited on index {idx}")
+                        still_pending.append(idx)
+                    else:
+                        # Non-rate-limit error - log and mark as refusal
+                        logger.warning(f"Request {idx} failed: {resp}")
+                        results[idx] = {
+                            "run_index": idx,
+                            "raw": f"ERROR: {resp}",
+                            "json": make_refusal_response(schema_cls),
+                        }
+                else:
+                    # Success - extract JSON
+                    raw = resp.choices[0].message.content
+                    extracted = extract_json(raw)
+                    json_out = extracted if extracted else make_refusal_response(schema_cls)
+                    results[idx] = {"run_index": idx, "raw": raw, "json": json_out}
+
+            # Small delay between chunks to avoid hammering the API
+            if chunk_start + chunk_size < len(pending_indices):
+                time.sleep(0.5)
+
+        pending_indices = still_pending
+        if still_pending:
+            retry_count += 1
+
+    # Log if we gave up on some requests
+    if pending_indices:
+        logger.error(
+            f"Gave up on {len(pending_indices)} requests after {max_retries} retries: {pending_indices}"
+        )
+        # Mark remaining as refusals
+        for idx in pending_indices:
+            results[idx] = {
+                "run_index": idx,
+                "raw": "ERROR: Max retries exceeded",
+                "json": make_refusal_response(schema_cls),
+            }
+
+    # Return results sorted by original index
+    return [results[i] for i in range(repeats)]
 
 
 # ---------------------------------------------------------------------------
