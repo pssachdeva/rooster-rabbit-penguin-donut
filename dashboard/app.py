@@ -728,7 +728,7 @@ def main():
                     "support_police": 4.35,
                 }
                 y_max = scale_ylims.get(selected_scale_for_plot, 4.25)
-                ax.set_ylim(0, y_max)
+                ax.set_ylim(1, y_max)
 
                 # Set xlim with padding for edge labels (especially refusal text)
                 x_padding = 0.6

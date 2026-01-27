@@ -1,0 +1,60 @@
+# Batch experiment using Batch API (50% discount)
+# Single provider/model required for batch processing
+
+prompts:
+  - path: prompts/tyler_persona_baseline/compliance.txt
+    schema_name: ComplianceResponse
+  - path: prompts/tyler_persona_baseline/deterrence.txt
+    schema_name: DeterrenceResponse
+  - path: prompts/tyler_persona_baseline/peers.txt
+    schema_name: PeersResponse
+  - path: prompts/tyler_persona_baseline/morality.txt
+    schema_name: MoralityResponse
+  - path: prompts/tyler_persona_baseline/obligation.txt
+    schema_name: ObligationResponse
+  - path: prompts/tyler_persona_baseline/support_police.txt
+    schema_name: SupportPoliceResponse
+  - path: prompts/tyler_persona_baseline/support_courts.txt
+    schema_name: SupportCourtsResponse
+  - path: prompts/tyler_persona_baseline/performance_police.txt
+    schema_name: PerformancePoliceResponse
+  - path: prompts/tyler_persona_baseline/performance_courts.txt
+    schema_name: PerformanceCourtsResponse
+
+models:
+  - provider: openai
+    name: gpt-5.2-2025-12-11
+  - provider: openai
+    name: gpt-5.1-2025-11-13
+  - provider: openai
+    name: gpt-5-2025-08-07
+  - provider: openai
+    name: gpt-4.1-2025-04-14
+  - provider: openai
+    name: gpt-4o-2024-11-20
+  - provider: anthropic
+    name: claude-3-7-sonnet-20250219
+  - provider: anthropic
+    name: claude-sonnet-4-20250514
+  - provider: anthropic
+    name: claude-haiku-4-5-20251001
+  - provider: anthropic
+    name: claude-sonnet-4-5-20250929
+  - provider: anthropic
+    name: claude-opus-4-5-20251101
+  - provider: google
+    name: gemini-3-pro-preview
+  - provider: google
+    name: gemini-3-flash-preview
+  - provider: google
+    name: gemini-2.5-pro
+  - provider: google
+    name: gemini-2.5-flash
+  - provider: google
+    name: gemini-2.0-flash
+
+temperature: 1.0
+max_completion_tokens: 8000
+experiment_name: exp4.0.0_persona_closed_t=1
+use_structured_output: false
+repeats: 50
