@@ -1,3 +1,8 @@
 data/Tyler.csv filter=lfs diff=lfs merge=lfs -text
-data/Persona[[:space:]]Baseline.csv filter=lfs diff=lfs merge=lfs -text
 data/Persona_Baseline_System.csv filter=lfs diff=lfs merge=lfs -text
+Original_Runs.csv filter=lfs diff=lfs merge=lfs -text
+Persona_Baseline_System.csv filter=lfs diff=lfs merge=lfs -text
+Chicago_Resident.csv filter=lfs diff=lfs merge=lfs -text
+Israeli_Citizen.csv filter=lfs diff=lfs merge=lfs -text
+Police_High.csv filter=lfs diff=lfs merge=lfs -text
+Police_Low.csv filter=lfs diff=lfs merge=lfs -text
