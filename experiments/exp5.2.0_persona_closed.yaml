@@ -1,0 +1,67 @@
+experiment_name: exp5.2.0_closed
+
+temperature: 1.0
+max_completion_tokens: 10000
+use_structured_output: false
+persona_name: "Chicago Resident"
+persona_path: prompts/personas/baseline_chicago.txt
+repeats: 50
+
+prompts:
+  - name: compliance
+    schema_name: ComplianceResponse
+    system_prompt_path: prompts/tyler_v2_system_user_split/compliance.txt
+    messages:
+      - prompts/tyler_v2_system_user_split/compliance_items.txt
+  - name: deterrence
+    schema_name: DeterrenceResponse
+    system_prompt_path: prompts/tyler_v2_system_user_split/deterrence.txt
+    messages:
+      - prompts/tyler_v2_system_user_split/deterrence_items.txt
+  - name: peers
+    schema_name: PeersResponse
+    system_prompt_path: prompts/tyler_v2_system_user_split/peers.txt
+    messages:
+      - prompts/tyler_v2_system_user_split/peers_items.txt
+  - name: morality
+    schema_name: MoralityResponse
+    system_prompt_path: prompts/tyler_v2_system_user_split/morality.txt
+    messages:
+      - prompts/tyler_v2_system_user_split/morality_items.txt
+  - name: obligation
+    schema_name: ObligationResponse
+    system_prompt_path: prompts/tyler_v2_system_user_split/obligation.txt
+    messages:
+      - prompts/tyler_v2_system_user_split/obligation_items.txt
+
+models:
+  - provider: openai
+    name: gpt-5.2-2025-12-11
+  - provider: openai
+    name: gpt-5.1-2025-11-13
+  - provider: openai
+    name: gpt-5-2025-08-07
+  - provider: openai
+    name: gpt-4.1-2025-04-14
+  - provider: openai
+    name: gpt-4o-2024-11-20
+  - provider: anthropic
+    name: claude-3-7-sonnet-20250219
+  - provider: anthropic
+    name: claude-sonnet-4-20250514
+  - provider: anthropic
+    name: claude-haiku-4-5-20251001
+  - provider: anthropic
+    name: claude-sonnet-4-5-20250929
+  - provider: anthropic
+    name: claude-opus-4-5-20251101
+  - provider: google
+    name: gemini-3-pro-preview
+  - provider: google
+    name: gemini-3-flash-preview
+  - provider: google
+    name: gemini-2.5-pro
+  - provider: google
+    name: gemini-2.5-flash
+  - provider: google
+    name: gemini-2.0-flash
