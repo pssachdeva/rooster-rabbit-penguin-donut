@@ -341,6 +341,32 @@ def load_data(file_path: str, _version: str = _LABEL_VERSION, _mtime: float = 0.
     return df
 
 
+def _looks_like_lfs_pointer(df: pd.DataFrame) -> bool:
+    """Heuristic check for a Git LFS pointer file parsed as CSV."""
+    return any("git-lfs.github.com/spec/v1" in str(col) for col in df.columns)
+
+
+def validate_required_columns(
+    df: pd.DataFrame,
+    required: list[str],
+    dataset_name: str,
+    context_label: str,
+) -> bool:
+    """Validate required columns and emit a helpful UI error if missing."""
+    missing = [col for col in required if col not in df.columns]
+    if not missing:
+        return True
+
+    missing_str = ", ".join(missing)
+    st.error(f"{context_label}: `{dataset_name}` is missing required columns: {missing_str}.")
+    if _looks_like_lfs_pointer(df):
+        st.info(
+            "This file looks like a Git LFS pointer, not the actual CSV. "
+            "Pull LFS blobs in the runtime environment (for example, `git lfs pull`)."
+        )
+    return False
+
+
 def get_available_datasets() -> dict[str, Path]:
     """Get all available CSV files in the data directory."""
     return {f.stem: f for f in sorted(DATA_DIR.glob("*.csv"))}
@@ -418,6 +444,13 @@ def main():
     # Load data (pass mtime to bust cache when file changes)
     dataset_path = datasets[selected_dataset]
     df = load_data(str(dataset_path), _mtime=_get_file_mtime(dataset_path))
+    if not validate_required_columns(
+        df,
+        required=["model", "scale", "response"],
+        dataset_name=selected_dataset,
+        context_label="Selected dataset",
+    ):
+        return
 
     # Detect dataset change and reset filters
     if "current_dataset" not in st.session_state:
@@ -1796,6 +1829,20 @@ def main():
         persona2_path = datasets[persona2_file]
         df_persona1 = load_data(str(persona1_path), _mtime=_get_file_mtime(persona1_path))
         df_persona2 = load_data(str(persona2_path), _mtime=_get_file_mtime(persona2_path))
+        if not validate_required_columns(
+            df_persona1,
+            required=["model", "scale", "response"],
+            dataset_name=persona1_file,
+            context_label="Persona comparison",
+        ):
+            return
+        if not validate_required_columns(
+            df_persona2,
+            required=["model", "scale", "response"],
+            dataset_name=persona2_file,
+            context_label="Persona comparison",
+        ):
+            return
 
         # Extract persona names from the "persona" column
         if "persona" in df_persona1.columns and df_persona1["persona"].notna().any():
